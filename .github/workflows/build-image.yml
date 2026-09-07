@@ -6,7 +6,7 @@ on:
       pyslam_ref:
         description: 'pyslam git ref (commit SHA / tag / branch)'
         required: false
-        default: 'a5ff2562eb92'
+        default: 'a5ff2562eb929ed9a08420f528a120a3cca65585'
         type: string
   push:
     branches: [main]
@@ -23,7 +23,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  PYSLAM_REF_DEFAULT: 'a5ff2562eb92'  # pyslam master tip, pinned for reproducibility
+  PYSLAM_REF_DEFAULT: 'a5ff2562eb929ed9a08420f528a120a3cca65585'  # pyslam master tip (full SHA required), pinned for reproducibility
 
 jobs:
   build-and-push:

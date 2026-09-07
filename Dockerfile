@@ -15,7 +15,7 @@
 ###############################################################################
 FROM nvidia/cuda:12.8.1-devel-ubuntu22.04
 
-ARG PYSLAM_REF=a5ff2562eb92
+ARG PYSLAM_REF=a5ff2562eb929ed9a08420f528a120a3cca65585
 ARG DEBIAN_FRONTEND=noninteractive
 
 # ---- base tooling + runtime libs (X11/GTK for the pangolin viewer) ---------
@@ -46,11 +46,15 @@ ENV TARGET_MARCH="skylake" \
     PIP_NO_CACHE_DIR=1
 
 # ---- fetch pySLAM at a pinned ref -------------------------------------------
+# NOTE: git fetch by SHA needs the FULL 40-char commit id on GitHub; short
+# prefixes are rejected ("couldn't find remote ref").
 WORKDIR /opt
 RUN git clone --recursive --depth 1 https://github.com/luigifreda/pyslam.git pyslam \
  && cd pyslam \
- && git fetch --depth 1 origin "${PYSLAM_REF}" \
- && git checkout --detach FETCH_HEAD \
+ && ( git fetch --depth 1 origin "${PYSLAM_REF}" \
+      && git checkout --detach FETCH_HEAD \
+      || git checkout --detach "${PYSLAM_REF}" ) \
+ && git submodule sync --recursive \
  && git submodule update --init --recursive --depth 1 \
  && echo "${PYSLAM_REF}" > /opt/pyslam/.image_ref
 

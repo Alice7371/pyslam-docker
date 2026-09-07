@@ -39,7 +39,7 @@ python main_slam.py -k orbslam2 --dataset datasets/ETH/odometry/gray/sequences/0
 ## 构建
 
 - 推送到 `main`（改动 `Dockerfile` / `docker/` / workflow 本身）自动触发；每周一 18:00 UTC 定时重建刷新基础镜像；也可在 Actions 页面手动 `workflow_dispatch`，支持传入 `pyslam_ref`（commit / tag / 分支）构建任意 pyslam 版本。
-- 默认 pin 到 pyslam master `a5ff2562eb92`（2026-08-23）保证可复现。
+- 默认 pin 到 pyslam master `a5ff2562e`（完整 SHA `a5ff2562eb929ed9a08420f528a120a3cca65585`，2026-08-23）保证可复现。
 - 构建走官方 `install_all.sh`（venv 路线），完成后做 `torch/cv2/detectron2/pyslam` 导入冒烟测试，防静默半装。
 - 镜像较大（约 15–20 GB）：devel 基础镜像 + cu128 torch + OpenCV install 树 + 预下载的特征模型；层缓存存放在 GHCR 的 `buildcache` tag，定时重建通常只需几分钟。
 
