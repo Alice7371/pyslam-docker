@@ -15,7 +15,10 @@
 ###############################################################################
 FROM nvidia/cuda:12.8.1-devel-ubuntu22.04
 
+SHELL ["/bin/bash", "-c"]
+
 ARG PYSLAM_REF=a5ff2562eb929ed9a08420f528a120a3cca65585
+ARG PYSLAM_PYTHON_VERSION=3.11.9
 ARG DEBIAN_FRONTEND=noninteractive
 
 # ---- base tooling + runtime libs (X11/GTK for the pangolin viewer) ---------
@@ -45,6 +48,25 @@ ENV TARGET_MARCH="skylake" \
     MAKE_OPTS="-j4" \
     PIP_NO_CACHE_DIR=1
 
+# ---- pre-install pyenv + the exact python pyslam expects --------------------
+# pyslam's scripts/install_pyenv.sh is broken under docker build: it appends
+# pyenv init to ~/.bashrc (never sourced in non-interactive shells) and only
+# prepends $PYENV_ROOT/shims (not bin) to PATH, so `pyenv` stays unfindable,
+# `pyenv install 3.11.9` silently fails and the venv falls back to the system
+# python 3.10 (which violates pyslam's requires-python >= 3.11.9).
+# Pre-baking pyenv here makes pyslam's pyenv install a no-op and its
+# `python3 -m venv` pick 3.11.9 through the shims.
+ENV PYENV_ROOT=/root/.pyenv
+ENV PATH="${PYENV_ROOT}/shims:${PYENV_ROOT}/bin:${PATH}"
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      make libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
+      libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && git clone --depth 1 https://github.com/pyenv/pyenv.git "${PYENV_ROOT}" \
+    && pyenv install "${PYSLAM_PYTHON_VERSION}" \
+    && pyenv global "${PYSLAM_PYTHON_VERSION}" \
+    && python3 --version && pyenv version
+
 # ---- fetch pySLAM at a pinned ref -------------------------------------------
 # NOTE: git fetch by SHA needs the FULL 40-char commit id on GitHub; short
 # prefixes are rejected ("couldn't find remote ref").
@@ -70,7 +92,7 @@ RUN sed -i 's|CUDA_ARCH_BIN=$(get_cuda_arch_bin)|CUDA_ARCH_BIN="${PYSLAM_CUDA_AR
 # ---- run the official unified installer -------------------------------------
 # install_all.sh is docker-aware (skips sudo keep-alive on /.dockerenv) and
 # with no conda/pixi present it takes the venv route:
-#   system packages -> pyenv + python 3.11.9 venv (~/.python/venvs/pyslam)
+#   system packages -> pyenv venv w/ python 3.11.9 (~/.python/venvs/pyslam)
 #   -> pip packages (torch 2.9.1+cu128 via download.pytorch.org)
 #   -> thirdparty builds (OpenCV+contrib w/ CUDA, g2o, GTSAM, DBoW2, ...)
 #   -> C++ core (pybind11) -> semantic stack (detectron2 v0.6 + patch, ...)
@@ -78,9 +100,11 @@ WORKDIR /opt/pyslam
 RUN ./install_all.sh < /dev/null
 
 # ---- fail the build loudly if the environment is broken ---------------------
-# (install_all.sh does not run with `set -e`, so verify the key imports)
+# (install_all.sh does not run with `set -e`, so verify the key imports;
+#  pyenv-activate.sh is bash-only -> this RUN relies on SHELL = bash)
 RUN . ./pyenv-activate.sh \
- && python -c "import torch;    print('torch', torch.__version__, 'cuda', torch.version.cuda)" \
+ && python -c "import sys; assert sys.version_info[:2] == (3, 11), sys.version; print('python', sys.version.split()[0])" \
+ && python -c "import torch; v=torch.version.cuda; assert v and v.startswith('12'), v; print('torch', torch.__version__, 'cuda', v, 'archs', torch.cuda.get_arch_list())" \
  && python -c "import cv2;      print('cv2', cv2.__version__)" \
  && python -c "import detectron2, detectron2._C; print('detectron2 ok')" \
  && python -c "import pyslam;   print('pyslam import ok')" \
@@ -99,7 +123,7 @@ RUN rm -rf \
 
 # ---- default runtime environment ---------------------------------------------
 ENV VIRTUAL_ENV=/root/.python/venvs/pyslam \
-    PATH="/root/.pyenv/bin:${VIRTUAL_ENV}/bin:${PATH}" \
+    PATH="${VIRTUAL_ENV}/bin:${PATH}" \
     TF_CPP_MIN_LOG_LEVEL=3
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
