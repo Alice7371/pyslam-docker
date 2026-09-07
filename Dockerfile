@@ -12,6 +12,11 @@
 #   ghcr.io/<owner>/pyslam-docker
 #
 # Upstream: https://github.com/luigifreda/pyslam (MIT license)
+#
+# The official install_all.sh is split into phases below (same sub-scripts,
+# same order as scripts/install_all_venv.sh): a single monolithic RUN died
+# with the whole runner (16 GB RAM, -j4 Eigen/nvcc TUs) and one lost layer
+# cost a full 3.5 h rebuild.
 ###############################################################################
 FROM nvidia/cuda:12.8.1-devel-ubuntu22.04
 
@@ -29,7 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxkbcommon-x11-0 libglib2.0-0 \
     && ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime \
     && rm -rf /var/lib/apt/lists/* \
-    && echo 'Defaults env_keep += "DEBIAN_FRONTEND PYSLAM_CUDA_ARCH_BIN TORCH_CUDA_ARCH_LIST"' \
+    && echo 'Defaults env_keep += "DEBIAN_FRONTEND PYSLAM_CUDA_ARCH_BIN TORCH_CUDA_ARCH_LIST MAKEFLAGS"' \
         > /etc/sudoers.d/env_keep \
     && chmod 440 /etc/sudoers.d/env_keep
 
@@ -39,13 +44,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #      picks these up.
 # GPU: TORCH_CUDA_ARCH_LIST drives torch extensions (detectron2 CUDA ops);
 #      PYSLAM_CUDA_ARCH_BIN clamps the OpenCV CUDA build below.
+# MAKEFLAGS=-j2: the GH runner has 16 GB RAM; -j4 parallel Eigen/nvcc
+#      translation units OOM-killed the whole runner mid-build.
 ENV TARGET_MARCH="skylake" \
     CFLAGS="-march=skylake -mtune=skylake -O3 -pipe" \
     CXXFLAGS="-march=skylake -mtune=skylake -O3 -pipe" \
     PYSLAM_CUDA_ARCH_BIN="7.5 8.0 8.6" \
     TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6" \
     FORCE_CUDA=1 \
-    MAKE_OPTS="-j4" \
+    MAKEFLAGS="-j2" \
     PIP_NO_CACHE_DIR=1
 
 # ---- pre-install pyenv + the exact python pyslam expects --------------------
@@ -80,28 +87,57 @@ RUN git clone --recursive --depth 1 https://github.com/luigifreda/pyslam.git pys
  && git submodule update --init --recursive --depth 1 \
  && echo "${PYSLAM_REF}" > /opt/pyslam/.image_ref
 
-# ---- clamp OpenCV CUDA arch list to Turing + Ampere -------------------------
-# The stock script auto-detects arches via `nvcc --list-gpu-arch`, which on a
-# CUDA 12.8 devel image returns EVERY supported arch (sm_50 .. sm_120) and
-# would make the OpenCV CUDA build take many hours. Override with the exact
-# target list; see scripts/install_opencv_local.sh in pyslam.
+# ---- patch pyslam build scripts for this environment ------------------------
+# 1) clamp OpenCV CUDA arch list to Turing + Ampere: the stock script uses
+#    `nvcc --list-gpu-arch`, which on a CUDA 12.8 devel image returns EVERY
+#    arch (sm_50..sm_120) and would make the build take many hours.
+# 2) cap make parallelism to -j2 everywhere (runner RAM, see MAKEFLAGS note);
+#    explicit -j flags in the sub-scripts would override the env var.
 RUN sed -i 's|CUDA_ARCH_BIN=$(get_cuda_arch_bin)|CUDA_ARCH_BIN="${PYSLAM_CUDA_ARCH_BIN:-7.5 8.0 8.6}"|' \
-        /opt/pyslam/scripts/install_opencv_local.sh \
- && grep -qF 'CUDA_ARCH_BIN="${PYSLAM_CUDA_ARCH_BIN' /opt/pyslam/scripts/install_opencv_local.sh
+        scripts/install_opencv_local.sh \
+ && grep -qF 'CUDA_ARCH_BIN="${PYSLAM_CUDA_ARCH_BIN' scripts/install_opencv_local.sh \
+ && find . -name '*.sh' -not -path './.git/*' -not -path './thirdparty/*/\.git/*' \
+      -exec sed -i -E 's/-j[[:space:]]*\$\(\s*nproc\s*\)/-j2/g; s/-j\s*\$\{NPROC\}/-j2/g; s/make([[:space:]]+)-j([[:space:]]*)4\b/make\1-j2/g' {} + \
+ && grep -rEn '\-j\$\(nproc\)' --include='*.sh' . | head -5 || true
 
-# ---- run the official unified installer -------------------------------------
-# install_all.sh is docker-aware (skips sudo keep-alive on /.dockerenv) and
-# with no conda/pixi present it takes the venv route:
-#   system packages -> pyenv venv w/ python 3.11.9 (~/.python/venvs/pyslam)
-#   -> pip packages (torch 2.9.1+cu128 via download.pytorch.org)
-#   -> thirdparty builds (OpenCV+contrib w/ CUDA, g2o, GTSAM, DBoW2, ...)
-#   -> C++ core (pybind11) -> semantic stack (detectron2 v0.6 + patch, ...)
-WORKDIR /opt/pyslam
-RUN ./install_all.sh < /dev/null
+# ---- phase 1: system packages + pyslam venv (python 3.11.9 via pyenv) -------
+RUN ./scripts/install_system_packages.sh < /dev/null \
+ && ./scripts/pyenv-venv-create.sh < /dev/null \
+ && . ./pyenv-activate.sh && python3 --version
+
+# ---- phase 2: git modules (feature models) + pip stack ----------------------
+# (opencv from source w/ CUDA + nonfree, torch 2.9.1+cu128, faiss-gpu-cu12)
+RUN . ./pyenv-activate.sh \
+ && export WITH_PYTHON_INTERP_CHECK=ON \
+ && ./scripts/install_git_modules.sh < /dev/null \
+ && . ./scripts/install_pip3_packages.sh \
+ && python -c "import torch, cv2; print('torch', torch.__version__, torch.version.cuda, '| cv2', cv2.__version__)" \
+ && df -h / | tail -1
+
+# ---- phase 3: thirdparty C++ (g2opy, GTSAM, DBoW2, ...) + pyslam C++ core ---
+RUN . ./pyenv-activate.sh \
+ && export WITH_PYTHON_INTERP_CHECK=ON \
+ && . ./scripts/install_thirdparty.sh \
+ && . ./scripts/install_cpp.sh \
+ && df -h / | tail -1
+
+# ---- phase 4: semantic stack + outlier pins (mirrors install_all_venv.sh) ---
+RUN . ./pyenv-activate.sh \
+ && export WITH_PYTHON_INTERP_CHECK=ON \
+ && ./scripts/install_pip3_semantics.sh < /dev/null \
+ && pip install "pyarrow<19" \
+ && ./scripts/install_protobuf.sh < /dev/null \
+ && pip install "wandb>=0.25.1,<0.26" --force-reinstall \
+ && ./scripts/detectron_check.sh < /dev/null \
+ && pip install "numpy<2" --force-reinstall \
+ && df -h / | tail -1
+
+# ---- phase 5: pyslam C++ core (pybind11 modules) -----------------------------
+RUN . ./pyenv-activate.sh \
+ && ./build_cpp_core.sh < /dev/null \
+ && df -h / | tail -1
 
 # ---- fail the build loudly if the environment is broken ---------------------
-# (install_all.sh does not run with `set -e`, so verify the key imports;
-#  pyenv-activate.sh is bash-only -> this RUN relies on SHELL = bash)
 RUN . ./pyenv-activate.sh \
  && python -c "import sys; assert sys.version_info[:2] == (3, 11), sys.version; print('python', sys.version.split()[0])" \
  && python -c "import torch; v=torch.version.cuda; assert v and v.startswith('12'), v; print('torch', torch.__version__, 'cuda', v, 'archs', torch.cuda.get_arch_list())" \

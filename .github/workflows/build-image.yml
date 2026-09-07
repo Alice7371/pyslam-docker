@@ -39,9 +39,18 @@ jobs:
       - name: Free disk space (the image is large)
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-                       /usr/local/.ghcup /opt/hostedtoolcache 2>/dev/null || true
+                       /usr/local/.ghcup /opt/hostedtoolcache /usr/share/swift 2>/dev/null || true
           sudo docker image prune -af 2>/dev/null || true
           df -h /
+
+      - name: Add swap (Eigen/nvcc TUs at -j4 OOM-killed the runner once)
+        run: |
+          free -h
+          sudo fallocate -l 16G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h && swapon --show
 
       - name: Compute image name (must be lowercase for ghcr.io)
         id: image
