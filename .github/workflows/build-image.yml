@@ -86,9 +86,4 @@ jobs:
 
       - name: Smoke test (CPU-side import check on the pushed digest)
         run: |
-          docker run --rm "${{ steps.image.outputs.image }}@${{ steps.push.outputs.digest }}" \
-            python -c "
-import sys, torch, cv2, detectron2
-assert sys.version_info[:2] == (3, 11), sys.version
-assert torch.version.cuda and torch.version.cuda.startswith('12'), torch.version.cuda
-print('smoke ok:', sys.version.split()[0], torch.__version__, torch.version.cuda, cv2.__version__, torch.cuda.get_arch_list())"
+          docker run --rm "${{ steps.image.outputs.image }}@${{ steps.push.outputs.digest }}" python -c "import sys, torch, cv2, detectron2; assert sys.version_info[:2] == (3, 11), sys.version; assert torch.version.cuda and torch.version.cuda.startswith('12'), torch.version.cuda; print('smoke ok:', sys.version.split()[0], torch.__version__, torch.version.cuda, cv2.__version__, torch.cuda.get_arch_list())"
