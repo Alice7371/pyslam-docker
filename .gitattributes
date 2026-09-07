@@ -1,0 +1,6 @@
+# Force LF everywhere: entrypoint.sh runs inside a Linux container and the
+# workflow YAML must not carry CRLF from Windows checkouts.
+* text=auto eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+Dockerfile text eol=lf
