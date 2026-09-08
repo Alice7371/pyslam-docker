@@ -126,24 +126,118 @@ RUN . ./pyenv-activate.sh \
 # the expensive python/opencv/pip stack from scratch.
 FROM base AS full
 
-# ---- phase 3: thirdparty C++ (open3d, g2opy, GTSAM, DBoW2, ...) -------------
-# Disk is the constraint on GH runners (a full disk killed two builds here).
-# install_thirdparty.sh compiles open3d from source: the resulting wheel is
-# pip-installed into the venv, so the whole thirdparty/open3d tree (~15 GB
-# source+build) is dead weight afterwards. Also drop any */build tree that
-# has an install/ sibling (cmake-install pattern; gtsam_local); in-tree
-# pybind builds (g2opy, pydbow*, ...) have no install sibling and are kept.
-RUN . ./pyenv-activate.sh \
+# ---- phase 3: thirdparty, split into groups (mirrors install_thirdparty.sh) --
+# WHY split: GH runner disk (~117G usable) cannot hold the monolithic phase —
+# open3d's source build tree alone peaks ~15-20 GB next to the 40 GB base of
+# phases 1-2, and a full disk kills the whole runner mid-download. One group
+# per RUN keeps each peak transient and lets cleanup land between groups.
+# Groups mirror scripts/install_thirdparty.sh step-by-step; keep in sync when
+# bumping PYSLAM_REF.
+
+# 3a: core C++ libs + python bindings (in-tree .so builds are RUNTIME deps —
+#     keep their build trees; json/qhull cmake-install — drop build dirs)
+RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
  && export WITH_PYTHON_INTERP_CHECK=ON \
- && . ./scripts/install_thirdparty.sh \
- && echo '--- thirdparty sizes before cleanup ---' \
- && du -sh thirdparty/* 2>/dev/null | sort -h | tail -15 \
- && rm -rf thirdparty/open3d /root/.cache /tmp/pip-* \
+ && EXT="-DWITH_PYTHON_INTERP_CHECK=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
+ && [ -d thirdparty/opencv/install/lib/cmake/opencv4 ] \
+      && EXT="$EXT -DOpenCV_DIR=$PWD/thirdparty/opencv/install/lib/cmake/opencv4" || true \
+ && ./scripts/install_json_nlohmann.sh $EXT < /dev/null \
+ && ./scripts/install_qhull.sh $EXT < /dev/null \
+ && for m in orbslam2_features pangolin g2opy pydbow3 pydbow2 pyibow; do \
+        (cd thirdparty/$m && ./build.sh $EXT < /dev/null); \
+    done \
  && for d in thirdparty/*/build; do \
         [ -d "$d" ] && [ -d "$(dirname "$d")/install" ] && rm -rf "$d" || true; \
     done \
- && echo '--- thirdparty sizes after cleanup ---' \
- && du -sh thirdparty/* 2>/dev/null | sort -h | tail -15 \
+ && df -h / | tail -1
+
+# 3b: open3d from source — the wheel lands in the venv, the whole
+#     source+build tree (~15 GB) is dead weight right after
+RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
+ && export WITH_PYTHON_INTERP_CHECK=ON \
+ && EXT="-DWITH_PYTHON_INTERP_CHECK=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
+ && ./scripts/install_open3d_python.sh $EXT < /dev/null \
+ && python -c "import open3d; print('open3d', open3d.__version__)" \
+ && rm -rf thirdparty/open3d /root/.cache /tmp/pip-* \
+ && df -h / | tail -1
+
+# 3c: GTSAM (+ gtsam_factors): build tree is dead weight once installed
+RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
+ && export WITH_PYTHON_INTERP_CHECK=ON \
+ && EXT="-DWITH_PYTHON_INTERP_CHECK=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
+ && ./scripts/install_gtsam.sh $EXT < /dev/null \
+ && rm -rf thirdparty/gtsam_local/build \
+ && df -h / | tail -1
+
+# 3d: depth models (ml_depth_pro, depth_anything_v2/v3) + ros2 bindings
+# (r2d2 is a git submodule and needs nothing here, like upstream)
+RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
+ && export WITH_PYTHON_INTERP_CHECK=ON \
+ && EXT="-DWITH_PYTHON_INTERP_CHECK=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
+ && (cd thirdparty/ros2_pybindings && ./build.sh $EXT < /dev/null) \
+ && ( cd thirdparty \
+      && if [ ! -d ml_depth_pro ]; then \
+           git clone --depth 1 https://github.com/apple/ml-depth-pro.git ml_depth_pro \
+           && (cd ml_depth_pro && git apply ../ml_depth_pro.patch && . ./get_pretrained_models.sh < /dev/null); \
+         fi \
+      && if [ ! -d depth_anything_v2 ]; then \
+           git clone --depth 1 https://github.com/DepthAnything/Depth-Anything-V2.git depth_anything_v2 \
+           && (cd depth_anything_v2 && git apply ../depth_anything_v2.patch); \
+         fi \
+      && if [ -f depth_anything_v2/download_metric_models.py ]; then \
+           (cd depth_anything_v2 && python download_metric_models.py < /dev/null); \
+         fi ) \
+ && ./scripts/install_depth_anything_v3.sh < /dev/null \
+ && rm -rf /root/.cache /tmp/pip-* \
+ && df -h / | tail -1
+
+# 3e: stereo + 3D-foundation models (weights stay: needed at runtime).
+# mast3r/mvdust3r/vggt_robust need FULL clones for their pinned checkouts.
+RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
+ && export WITH_PYTHON_INTERP_CHECK=ON \
+ && ( cd thirdparty \
+      && if [ ! -d raft_stereo ]; then \
+           git clone --depth 1 https://github.com/princeton-vl/RAFT-Stereo.git raft_stereo \
+           && (cd raft_stereo && git apply ../raft_stereo.patch && ./download_models.sh < /dev/null); \
+         fi \
+      && if [ ! -d crestereo ]; then \
+           git clone --depth 1 https://github.com/megvii-research/CREStereo.git crestereo \
+           && (cd crestereo && git apply ../crestereo.patch && python download_models.py < /dev/null); \
+         fi \
+      && if [ ! -d crestereo_pytorch ]; then \
+           git clone --depth 1 https://github.com/ibaiGorordo/CREStereo-Pytorch.git crestereo_pytorch \
+           && (cd crestereo_pytorch && git apply ../crestereo_pytorch.patch && python download_models.py < /dev/null); \
+         fi ) \
+ && if [ "$CUDA_VERSION" != "0" ] && [ ! -d thirdparty/mast3r ]; then \
+      ( cd thirdparty \
+        && git clone --recursive https://github.com/naver/mast3r mast3r \
+        && (cd mast3r \
+            && git checkout e06b0093ddacfd8267cdafe5387954a650af0d3f \
+            && git submodule update --init --recursive \
+            && git apply ../mast3r.patch \
+            && (cd dust3r && git apply ../../mast3r-dust3r.patch) \
+            && (cd croco && git apply ../../../mast3r-dust3r-croco.patch) \
+            && (cd croco/models/curope && python setup.py build_ext --inplace) \
+            && mkdir -p checkpoints \
+            && (cd checkpoints && wget -q https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth)) ); \
+    fi \
+ && if [ "$CUDA_VERSION" != "0" ] && [ ! -d thirdparty/mvdust3r ]; then \
+      ( cd thirdparty \
+        && git clone https://github.com/facebookresearch/mvdust3r.git mvdust3r \
+        && (cd mvdust3r \
+            && git checkout 430ca6630b07567cfb2447a4dcee9747b132d5c7 \
+            && git apply ../mvdust3r.patch \
+            && (cd croco/models/curope && python setup.py build_ext --inplace) \
+            && mkdir -p checkpoints \
+            && (cd checkpoints && cp ../mvdust3r_scripts/download_models.py . && python download_models.py < /dev/null)) ); \
+    fi \
+ && if [ "$CUDA_VERSION" != "0" ] && [ ! -d thirdparty/vggt ]; then \
+      git clone --depth 1 https://github.com/facebookresearch/vggt.git thirdparty/vggt; fi \
+ && if [ "$CUDA_VERSION" != "0" ] && [ ! -d thirdparty/vggt_robust ]; then \
+      ( git clone https://github.com/cvlab-kaist/RobustVGGT.git thirdparty/vggt_robust \
+        && (cd thirdparty/vggt_robust && git checkout 0763ed6484b1e91a2b8bd5072d317745743492cc) ); fi \
+ && if [ "$CUDA_VERSION" != "0" ]; then ./scripts/install_fast3r.sh < /dev/null; fi \
+ && rm -rf /root/.cache /tmp/pip-* \
  && df -h / | tail -1
 
 # ---- phase 3b: pyslam C++ core against the built thirdparty -----------------
