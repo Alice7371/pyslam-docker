@@ -126,18 +126,36 @@ RUN . ./pyenv-activate.sh \
 # the expensive python/opencv/pip stack from scratch.
 FROM base AS full
 
-# ---- phase 3: thirdparty C++ (g2opy, GTSAM, DBoW2, ...) + pyslam C++ core ---
-# GTSAM build tree removed in-layer (install/ tree stays; it is what pyslam
-# links against); buildkit's layer commit duplicates the layer diff, so
-# keeping a phase lean directly halves its disk spike.
+# ---- phase 3: thirdparty C++ (open3d, g2opy, GTSAM, DBoW2, ...) -------------
+# Disk is the constraint on GH runners (a full disk killed two builds here).
+# install_thirdparty.sh compiles open3d from source: the resulting wheel is
+# pip-installed into the venv, so the whole thirdparty/open3d tree (~15 GB
+# source+build) is dead weight afterwards. Also drop any */build tree that
+# has an install/ sibling (cmake-install pattern; gtsam_local); in-tree
+# pybind builds (g2opy, pydbow*, ...) have no install sibling and are kept.
 RUN . ./pyenv-activate.sh \
  && export WITH_PYTHON_INTERP_CHECK=ON \
  && . ./scripts/install_thirdparty.sh \
+ && echo '--- thirdparty sizes before cleanup ---' \
+ && du -sh thirdparty/* 2>/dev/null | sort -h | tail -15 \
+ && rm -rf thirdparty/open3d /root/.cache /tmp/pip-* \
+ && for d in thirdparty/*/build; do \
+        [ -d "$d" ] && [ -d "$(dirname "$d")/install" ] && rm -rf "$d" || true; \
+    done \
+ && echo '--- thirdparty sizes after cleanup ---' \
+ && du -sh thirdparty/* 2>/dev/null | sort -h | tail -15 \
+ && df -h / | tail -1
+
+# ---- phase 3b: pyslam C++ core against the built thirdparty -----------------
+RUN . ./pyenv-activate.sh \
+ && export WITH_PYTHON_INTERP_CHECK=ON \
  && . ./scripts/install_cpp.sh \
- && rm -rf thirdparty/gtsam_local/build \
  && df -h / | tail -1
 
 # ---- phase 4: semantic stack + outlier pins (mirrors install_all_venv.sh) ---
+# Fail fast instead of hanging mid-download when disk runs out.
+RUN AVAIL=$(df --output=avail -BG / | tail -1 | tr -dc '0-9'); \
+    echo "free disk: ${AVAIL}G"; [ "$AVAIL" -gt 12 ] || { echo 'FATAL: low disk before semantics'; false; }
 RUN . ./pyenv-activate.sh \
  && export WITH_PYTHON_INTERP_CHECK=ON \
  && ./scripts/install_pip3_semantics.sh < /dev/null \
