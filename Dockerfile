@@ -86,6 +86,7 @@ RUN git clone --recursive --depth 1 https://github.com/luigifreda/pyslam.git pys
  && git submodule sync --recursive \
  && git submodule update --init --recursive --depth 1 \
  && echo "${PYSLAM_REF}" > /opt/pyslam/.image_ref
+WORKDIR /opt/pyslam
 
 # ---- patch pyslam build scripts for this environment ------------------------
 # 1) clamp OpenCV CUDA arch list to Turing + Ampere: the stock script uses
@@ -93,12 +94,13 @@ RUN git clone --recursive --depth 1 https://github.com/luigifreda/pyslam.git pys
 #    arch (sm_50..sm_120) and would make the build take many hours.
 # 2) cap make parallelism to -j2 everywhere (runner RAM, see MAKEFLAGS note);
 #    explicit -j flags in the sub-scripts would override the env var.
+# NOTE: no bare trailing "|| true" here — it would swallow upstream && failures.
 RUN sed -i 's|CUDA_ARCH_BIN=$(get_cuda_arch_bin)|CUDA_ARCH_BIN="${PYSLAM_CUDA_ARCH_BIN:-7.5 8.0 8.6}"|' \
         scripts/install_opencv_local.sh \
  && grep -qF 'CUDA_ARCH_BIN="${PYSLAM_CUDA_ARCH_BIN' scripts/install_opencv_local.sh \
- && find . -name '*.sh' -not -path './.git/*' -not -path './thirdparty/*/\.git/*' \
-      -exec sed -i -E 's/-j[[:space:]]*\$\(\s*nproc\s*\)/-j2/g; s/-j\s*\$\{NPROC\}/-j2/g; s/make([[:space:]]+)-j([[:space:]]*)4\b/make\1-j2/g' {} + \
- && grep -rEn '\-j\$\(nproc\)' --include='*.sh' . | head -5 || true
+ && find . -name '*.sh' -not -path '*/.git/*' \
+      -exec sed -i -E 's/-j[[:space:]]*\$\(\s*nproc\s*\)/-j2/g; s/-j\s*\$\{NPROC\}/-j2/g; s/([[:space:]])-j[[:space:]]*4\b/\1-j2/g' {} + \
+ && { grep -rEn -- '-j\$\(nproc\)' --include='*.sh' . | head -5 || true; }
 
 # ---- phase 1: system packages + pyslam venv (python 3.11.9 via pyenv) -------
 RUN ./scripts/install_system_packages.sh < /dev/null \
