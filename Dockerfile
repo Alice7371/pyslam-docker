@@ -18,7 +18,7 @@
 # with the whole runner (16 GB RAM, -j4 Eigen/nvcc TUs) and one lost layer
 # cost a full 3.5 h rebuild.
 ###############################################################################
-FROM nvidia/cuda:12.8.1-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.1-devel-ubuntu22.04 AS base
 
 SHELL ["/bin/bash", "-c"]
 
@@ -109,18 +109,32 @@ RUN ./scripts/install_system_packages.sh < /dev/null \
 
 # ---- phase 2: git modules (feature models) + pip stack ----------------------
 # (opencv from source w/ CUDA + nonfree, torch 2.9.1+cu128, faiss-gpu-cu12)
+# Opencv source + build trees are deleted in the SAME layer: only the
+# install/ tree and the installed python wheel are used later. Keeping them
+# cost ~10 GB of runner disk (a disk-full killed a build once).
 RUN . ./pyenv-activate.sh \
  && export WITH_PYTHON_INTERP_CHECK=ON \
  && ./scripts/install_git_modules.sh < /dev/null \
  && . ./scripts/install_pip3_packages.sh \
  && python -c "import torch, cv2; print('torch', torch.__version__, torch.version.cuda, '| cv2', cv2.__version__)" \
+ && rm -rf thirdparty/opencv/opencv-[0-9]* thirdparty/opencv/opencv_contrib* \
+          thirdparty/opencv/build /root/.pyenv/cache \
  && df -h / | tail -1
 
+# ---- builder checkpoint stage: phases 1-2 above are pushed as :builder -----
+# and exported to the registry cache, so later-phase failures do not restart
+# the expensive python/opencv/pip stack from scratch.
+FROM base AS full
+
 # ---- phase 3: thirdparty C++ (g2opy, GTSAM, DBoW2, ...) + pyslam C++ core ---
+# GTSAM build tree removed in-layer (install/ tree stays; it is what pyslam
+# links against); buildkit's layer commit duplicates the layer diff, so
+# keeping a phase lean directly halves its disk spike.
 RUN . ./pyenv-activate.sh \
  && export WITH_PYTHON_INTERP_CHECK=ON \
  && . ./scripts/install_thirdparty.sh \
  && . ./scripts/install_cpp.sh \
+ && rm -rf thirdparty/gtsam_local/build \
  && df -h / | tail -1
 
 # ---- phase 4: semantic stack + outlier pins (mirrors install_all_venv.sh) ---
@@ -150,11 +164,9 @@ RUN . ./pyenv-activate.sh \
 
 # ---- trim build intermediates ------------------------------------------------
 # Keep: thirdparty/opencv/install (C++ core links against it), cpp/build and
-# detectron2 in-place .so. Remove: opencv build tree + git metadata.
+# detectron2 in-place .so. Remove: git metadata.
 RUN rm -rf \
-      thirdparty/opencv/build \
-      thirdparty/opencv/opencv/.git \
-      thirdparty/opencv/opencv_contrib/.git \
+      thirdparty/opencv/opencv \
       thirdparty/detectron2/build \
       /root/.pyenv/cache /root/.cache/pip \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
