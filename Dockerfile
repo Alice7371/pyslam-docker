@@ -158,10 +158,12 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
 #     renderer) additionally requires clang libc++ on Linux — provide it via
 #     the versioned llvm packages (land in /usr/lib/llvm-14/lib, exactly the
 #     path Filament's cmake searches; master added this requirement ~2026-09).
+#     Master also stopped vendoring minizip (ExtractZIP.cpp -> <unzip.h>):
+#     libminizip-dev's pkg-config supplies -I/usr/include/minizip.
 RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
  && pip install "cmake>=3.24,<4" \
  && apt-get update && apt-get install -y --no-install-recommends \
-      liblapacke-dev libc++-dev libc++abi-dev \
+      liblapacke-dev libc++-dev libc++abi-dev libminizip-dev \
  && rm -rf /var/lib/apt/lists/* \
  && export WITH_PYTHON_INTERP_CHECK=ON \
  && EXT="-DWITH_PYTHON_INTERP_CHECK=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
