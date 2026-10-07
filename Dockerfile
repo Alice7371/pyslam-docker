@@ -212,20 +212,29 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
 
 # 3e: stereo + 3D-foundation models (weights stay: needed at runtime).
 # mast3r/mvdust3r/vggt_robust need FULL clones for their pinned checkouts.
+# raft_stereo/crestereo* are cloned from master (upstream pins nothing):
+# their patches are best-effort (drift -> WARN, pristine download still runs;
+# crestereo is megengine-based and unusable here anyway).
 RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
  && export WITH_PYTHON_INTERP_CHECK=ON \
  && ( cd thirdparty \
       && if [ ! -d raft_stereo ]; then \
            git clone --depth 1 https://github.com/princeton-vl/RAFT-Stereo.git raft_stereo \
-           && (cd raft_stereo && git apply ../raft_stereo.patch && ./download_models.sh < /dev/null); \
+           && { (cd raft_stereo && git apply ../raft_stereo.patch) \
+                || echo "WARN: raft_stereo.patch drifted, using pristine script"; } \
+           && (cd raft_stereo && ./download_models.sh < /dev/null); \
          fi \
       && if [ ! -d crestereo ]; then \
            git clone --depth 1 https://github.com/megvii-research/CREStereo.git crestereo \
-           && (cd crestereo && git apply ../crestereo.patch && python download_models.py < /dev/null); \
+           && { (cd crestereo && git apply ../crestereo.patch) \
+                || echo "WARN: crestereo.patch drifted, skipped"; } \
+           && (cd crestereo && python download_models.py < /dev/null); \
          fi \
       && if [ ! -d crestereo_pytorch ]; then \
            git clone --depth 1 https://github.com/ibaiGorordo/CREStereo-Pytorch.git crestereo_pytorch \
-           && (cd crestereo_pytorch && git apply ../crestereo_pytorch.patch && python download_models.py < /dev/null); \
+           && { (cd crestereo_pytorch && git apply ../crestereo_pytorch.patch) \
+                || echo "WARN: crestereo_pytorch.patch drifted, skipped"; } \
+           && (cd crestereo_pytorch && python download_models.py < /dev/null); \
          fi ) \
  && if [ "$CUDA_VERSION" != "0" ] && [ ! -d thirdparty/mast3r ]; then \
       ( cd thirdparty \
