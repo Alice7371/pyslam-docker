@@ -152,8 +152,13 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
  && df -h / | tail -1
 
 # 3b: open3d from source — the wheel lands in the venv, the whole
-#     source+build tree (~15 GB) is dead weight right after
+#     source+build tree (~15 GB) is dead weight right after.
+#     Open3D master requires CMake >= 3.24; Ubuntu 22.04 ships 3.22 ->
+#     install a newer cmake into the venv (first on PATH) + liblapacke.
 RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
+ && pip install "cmake>=3.24,<4" \
+ && apt-get update && apt-get install -y --no-install-recommends liblapacke-dev \
+ && rm -rf /var/lib/apt/lists/* \
  && export WITH_PYTHON_INTERP_CHECK=ON \
  && EXT="-DWITH_PYTHON_INTERP_CHECK=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
  && ./scripts/install_open3d_python.sh $EXT < /dev/null \
