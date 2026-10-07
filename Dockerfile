@@ -159,7 +159,12 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
 #     the versioned llvm packages (land in /usr/lib/llvm-14/lib, exactly the
 #     path Filament's cmake searches; master added this requirement ~2026-09).
 #     Master also stopped vendoring minizip (ExtractZIP.cpp -> <unzip.h>):
-#     libminizip-dev's pkg-config supplies -I/usr/include/minizip.
+#     libminizip-dev's pkg-config supplies -I/usr/include/minizip, and
+#     -DWITH_MINIZIP=ON is forced (master defaults it OFF while ExtractZIP
+#     includes <unzip.h> unconditionally). With BUILD_CUDA_MODULE=ON master
+#     builds only the cuda python module while its own __init__ imports
+#     open3d.cpu first -> alias cuda->cpu after install (pybind single-phase
+#     init makes the copy a valid open3d.cpu.pybind).
 RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
  && pip install "cmake>=3.24,<4" \
  && apt-get update && apt-get install -y --no-install-recommends \
@@ -171,7 +176,7 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
  && export WITH_PYTHON_INTERP_CHECK=ON \
  && EXT="-DWITH_PYTHON_INTERP_CHECK=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
  && ./scripts/install_open3d_python.sh $EXT < /dev/null \
- && python -c "import open3d; print('open3d', open3d.__version__)" \
+ && python -c "import os, shutil, site; sp=site.getsitepackages()[0]; cuda=os.path.join(sp,'open3d','cuda'); cpu=os.path.join(sp,'open3d','cpu'); os.path.isdir(cuda) and not os.path.isdir(cpu) and shutil.copytree(cuda,cpu); import open3d as o3; print('open3d', o3.__version__)" \
  && rm -rf thirdparty/open3d /root/.cache /tmp/pip-* \
  && df -h / | tail -1
 
