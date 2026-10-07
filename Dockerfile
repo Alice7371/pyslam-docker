@@ -98,6 +98,9 @@ WORKDIR /opt/pyslam
 RUN sed -i 's|CUDA_ARCH_BIN=$(get_cuda_arch_bin)|CUDA_ARCH_BIN="${PYSLAM_CUDA_ARCH_BIN:-7.5 8.0 8.6}"|' \
         scripts/install_opencv_local.sh \
  && grep -qF 'CUDA_ARCH_BIN="${PYSLAM_CUDA_ARCH_BIN' scripts/install_opencv_local.sh \
+ && sed -i 's/-DBUILD_EXAMPLES=OFF/-DBUILD_EXAMPLES=OFF -DWITH_MINIZIP=ON/g' \
+        scripts/install_open3d_python.sh \
+ && grep -q 'WITH_MINIZIP=ON' scripts/install_open3d_python.sh \
  && find . -name '*.sh' -not -path '*/.git/*' \
       -exec sed -i -E 's/-j[[:space:]]*\$\(\s*nproc\s*\)/-j2/g; s/-j\s*\$\{NPROC\}/-j2/g; s/([[:space:]])-j[[:space:]]*4\b/\1-j2/g' {} + \
  && { grep -rEn -- '-j\$\(nproc\)' --include='*.sh' . | head -5 || true; }
