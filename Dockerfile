@@ -272,6 +272,10 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
         && (cd thirdparty/vggt_robust && git checkout 0763ed6484b1e91a2b8bd5072d317745743492cc) ); fi \
  && if [ "$CUDA_VERSION" != "0" ]; then ./scripts/install_fast3r.sh < /dev/null; fi \
  && rm -rf /root/.cache /tmp/pip-* \
+      thirdparty/mast3r/.git thirdparty/mast3r/dust3r/.git thirdparty/mast3r/croco/.git \
+      thirdparty/vggt/.git thirdparty/vggt_robust/.git \
+      thirdparty/raft_stereo/.git thirdparty/crestereo/.git thirdparty/crestereo_pytorch/.git \
+      thirdparty/ml_depth_pro/.git thirdparty/depth_anything_v2/.git \
  && df -h / | tail -1
 
 # ---- phase 3b: pyslam C++ core against the built thirdparty -----------------
@@ -284,14 +288,47 @@ RUN . ./pyenv-activate.sh \
 # Fail fast instead of hanging mid-download when disk runs out.
 RUN AVAIL=$(df --output=avail -BG / | tail -1 | tr -dc '0-9'); \
     echo "free disk: ${AVAIL}G"; [ "$AVAIL" -gt 12 ] || { echo 'FATAL: low disk before semantics'; false; }
+
+# ---- phase 4 split into 3 sub-layers (mirror install_pip3_semantics.sh) ------
+# One semantics RUN blew a runner once (single ~8G diff + Detic download on a
+# disk already at 88%); smaller diffs + cleanup between layers isolate that.
+
+# 4a: transformers/f3rm/timm/yolo + RF-DETR
 RUN . ./pyenv-activate.sh \
  && export WITH_PYTHON_INTERP_CHECK=ON \
- && ./scripts/install_pip3_semantics.sh < /dev/null \
+ && { C=""; [ -f constraints.txt ] && C="--constraint constraints.txt"; true; } \
+ && pip install "transformers>=4.41.2" $C \
+ && pip install "fpsample<0.3.0" \
+ && pip install f3rm $C \
+ && pip install timm==1.0.15 $C \
+ && pip install "ultralytics>=8.4.8" \
+ && ./scripts/install_rf_detr.sh < /dev/null \
+ && rm -rf /root/.cache /tmp/pip-* \
+ && df -h / | tail -1
+
+# 4b: detectron2 + EOV-Seg
+RUN . ./pyenv-activate.sh \
+ && export WITH_PYTHON_INTERP_CHECK=ON \
+ && ./scripts/install_detectron2.sh < /dev/null \
+ && ./scripts/install_eov_seg.sh < /dev/null \
+ && rm -rf /root/.cache /tmp/pip-* \
+ && df -h / | tail -1
+
+# 4c: Detic + ODISE + opencv wheel pin + outlier pins + detectron check
+RUN . ./pyenv-activate.sh \
+ && export WITH_PYTHON_INTERP_CHECK=ON \
+ && ./scripts/install_detic.sh < /dev/null \
+ && ./scripts/install_odise.sh < /dev/null \
+ && { compgen -G "thirdparty/opencv-python/opencv*.whl" > /dev/null \
+      && pip install thirdparty/opencv-python/opencv*.whl --force-reinstall \
+      || echo "no local opencv wheel found, skipping reinstall"; } \
  && pip install "pyarrow<19" \
  && ./scripts/install_protobuf.sh < /dev/null \
  && pip install "wandb>=0.25.1,<0.26" --force-reinstall \
  && ./scripts/detectron_check.sh < /dev/null \
  && pip install "numpy<2" --force-reinstall \
+ && pip install open-clip-torch==2.24.0 "einops>=0.7.0" \
+ && rm -rf /root/.cache /tmp/pip-* \
  && df -h / | tail -1
 
 # ---- phase 5: pyslam C++ core (pybind11 modules) -----------------------------
