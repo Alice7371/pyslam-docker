@@ -240,7 +240,7 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
       ( cd thirdparty \
         && git clone --recursive https://github.com/naver/mast3r mast3r \
         && (cd mast3r \
-            && git checkout e06b0093ddacfd8267cdafe5387954a650af0d3f \
+            && git checkout e06b0093ddacfd8267cdafe5387954a650af0d3b \
             && git submodule update --init --recursive \
             && git apply ../mast3r.patch \
             && (cd dust3r && git apply ../../mast3r-dust3r.patch) \
