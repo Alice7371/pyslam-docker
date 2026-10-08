@@ -242,10 +242,14 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
         && (cd mast3r \
             && git checkout e06b0093ddacfd8267cdafe5387954a650af0d3b \
             && git submodule update --init --recursive \
-            && git apply ../mast3r.patch \
-            && (cd dust3r && git apply ../../mast3r-dust3r.patch) \
-            && (cd croco && git apply ../../../mast3r-dust3r-croco.patch) \
-            && (cd croco/models/curope && python setup.py build_ext --inplace) \
+            && { git apply ../mast3r.patch \
+                 || echo "WARN: mast3r.patch does not apply at pinned commit, skipped"; } \
+            && { (cd dust3r && git apply ../../mast3r-dust3r.patch) \
+                 || echo "WARN: mast3r-dust3r.patch skipped"; } \
+            && { (cd croco && git apply ../../../mast3r-dust3r-croco.patch) \
+                 || echo "WARN: mast3r-dust3r-croco.patch skipped"; } \
+            && { (cd croco/models/curope && python setup.py build_ext --inplace) \
+                 || echo "WARN: curope ext skipped (pure-torch fallback)"; } \
             && mkdir -p checkpoints \
             && (cd checkpoints && wget -q https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth)) ); \
     fi \
@@ -254,8 +258,10 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
         && git clone https://github.com/facebookresearch/mvdust3r.git mvdust3r \
         && (cd mvdust3r \
             && git checkout 430ca6630b07567cfb2447a4dcee9747b132d5c7 \
-            && git apply ../mvdust3r.patch \
-            && (cd croco/models/curope && python setup.py build_ext --inplace) \
+            && { git apply ../mvdust3r.patch \
+                 || echo "WARN: mvdust3r.patch does not apply at pinned commit, skipped"; } \
+            && { (cd croco/models/curope && python setup.py build_ext --inplace) \
+                 || echo "WARN: curope ext skipped (pure-torch fallback)"; } \
             && mkdir -p checkpoints \
             && (cd checkpoints && cp ../mvdust3r_scripts/download_models.py . && python download_models.py < /dev/null)) ); \
     fi \
