@@ -263,7 +263,7 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
             && { (cd croco/models/curope && python setup.py build_ext --inplace) \
                  || echo "WARN: curope ext skipped (pure-torch fallback)"; } \
             && mkdir -p checkpoints \
-            && (cd checkpoints && cp ../mvdust3r_scripts/download_models.py . && python download_models.py < /dev/null)) ); \
+            && (cd checkpoints && cp ../../mvdust3r_scripts/download_models.py . && python download_models.py < /dev/null)) ); \
     fi \
  && if [ "$CUDA_VERSION" != "0" ] && [ ! -d thirdparty/vggt ]; then \
       git clone --depth 1 https://github.com/facebookresearch/vggt.git thirdparty/vggt; fi \
