@@ -151,33 +151,14 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
     done \
  && df -h / | tail -1
 
-# 3b: open3d from source — the wheel lands in the venv, the whole
-#     source+build tree (~15 GB) is dead weight right after.
-#     Open3D master requires CMake >= 3.24; Ubuntu 22.04 ships 3.22 ->
-#     install a newer cmake into the venv (first on PATH). Filament (Open3D's
-#     renderer) additionally requires clang libc++ on Linux — provide it via
-#     the versioned llvm packages (land in /usr/lib/llvm-14/lib, exactly the
-#     path Filament's cmake searches; master added this requirement ~2026-09).
-#     Master also stopped vendoring minizip (ExtractZIP.cpp -> <unzip.h>):
-#     libminizip-dev's pkg-config supplies -I/usr/include/minizip, and
-#     -DWITH_MINIZIP=ON is forced (master defaults it OFF while ExtractZIP
-#     includes <unzip.h> unconditionally). With BUILD_CUDA_MODULE=ON master
-#     builds only the cuda python module while its own __init__ imports
-#     open3d.cpu first -> alias cuda->cpu after install (pybind single-phase
-#     init makes the copy a valid open3d.cpu.pybind).
-RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
- && pip install "cmake>=3.24,<4" \
- && apt-get update && apt-get install -y --no-install-recommends \
-      liblapacke-dev libc++-dev libc++abi-dev libminizip-dev \
- && rm -rf /var/lib/apt/lists/* \
- && sed -i 's/-DBUILD_EXAMPLES=OFF/-DBUILD_EXAMPLES=OFF -DWITH_MINIZIP=ON/g' \
-        scripts/install_open3d_python.sh \
- && grep -q 'WITH_MINIZIP=ON' scripts/install_open3d_python.sh \
- && export WITH_PYTHON_INTERP_CHECK=ON \
- && EXT="-DWITH_PYTHON_INTERP_CHECK=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
- && ./scripts/install_open3d_python.sh $EXT < /dev/null \
- && python -c "import os, shutil, site; sp=site.getsitepackages()[0]; cuda=os.path.join(sp,'open3d','cuda'); cpu=os.path.join(sp,'open3d','cpu'); os.path.isdir(cuda) and not os.path.isdir(cpu) and shutil.copytree(cuda,cpu); import open3d as o3; print('open3d', o3.__version__)" \
- && rm -rf thirdparty/open3d /root/.cache /tmp/pip-* \
+# 3b: open3d — official CPU wheel instead of source build. The CUDA source
+#     build cost ~50 min + ~8G layer diff on a disk-constrained runner and
+#     pushed the export past the disk ceiling; pyslam's core does not need
+#     open3d GPU paths, and the wheel natively provides open3d.cpu.
+RUN . ./pyenv-activate.sh \
+ && pip install open3d \
+ && python -c "import open3d; print('open3d', open3d.__version__)" \
+ && rm -rf /root/.cache /tmp/pip-* \
  && df -h / | tail -1
 
 # 3c: GTSAM (+ gtsam_factors): build tree is dead weight once installed
@@ -188,8 +169,9 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
  && rm -rf thirdparty/gtsam_local/build \
  && df -h / | tail -1
 
-# 3d: depth models (ml_depth_pro, depth_anything_v2/v3) + ros2 bindings
-# (r2d2 is a git submodule and needs nothing here, like upstream)
+# 3d: depth models (ml_depth_pro, depth_anything_v2/v3) + ros2 bindings.
+# NO baked weights: pyslam downloads each estimator's checkpoint on first
+# use; baking them blew the runner disk at export (ResourceExhausted, run 19).
 RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
  && export WITH_PYTHON_INTERP_CHECK=ON \
  && EXT="-DWITH_PYTHON_INTERP_CHECK=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
@@ -197,14 +179,11 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
  && ( cd thirdparty \
       && if [ ! -d ml_depth_pro ]; then \
            git clone --depth 1 https://github.com/apple/ml-depth-pro.git ml_depth_pro \
-           && (cd ml_depth_pro && git apply ../ml_depth_pro.patch && . ./get_pretrained_models.sh < /dev/null); \
+           && (cd ml_depth_pro && git apply ../ml_depth_pro.patch); \
          fi \
       && if [ ! -d depth_anything_v2 ]; then \
            git clone --depth 1 https://github.com/DepthAnything/Depth-Anything-V2.git depth_anything_v2 \
            && (cd depth_anything_v2 && git apply ../depth_anything_v2.patch); \
-         fi \
-      && if [ -f depth_anything_v2/download_metric_models.py ]; then \
-           (cd depth_anything_v2 && python download_metric_models.py < /dev/null); \
          fi ) \
  && ./scripts/install_depth_anything_v3.sh < /dev/null \
  && rm -rf /root/.cache /tmp/pip-* \
@@ -213,28 +192,26 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
 # 3e: stereo + 3D-foundation models (weights stay: needed at runtime).
 # mast3r/mvdust3r/vggt_robust need FULL clones for their pinned checkouts.
 # raft_stereo/crestereo* are cloned from master (upstream pins nothing):
-# their patches are best-effort (drift -> WARN, pristine download still runs;
-# crestereo is megengine-based and unusable here anyway).
+# their patches are best-effort (drift -> WARN). NO checkpoint downloads
+# here — pyslam fetches each model on first use; baking weights blew the
+# runner disk at export (ResourceExhausted, run 19).
 RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
  && export WITH_PYTHON_INTERP_CHECK=ON \
  && ( cd thirdparty \
       && if [ ! -d raft_stereo ]; then \
            git clone --depth 1 https://github.com/princeton-vl/RAFT-Stereo.git raft_stereo \
            && { (cd raft_stereo && git apply ../raft_stereo.patch) \
-                || echo "WARN: raft_stereo.patch drifted, using pristine script"; } \
-           && (cd raft_stereo && ./download_models.sh < /dev/null); \
+                || echo "WARN: raft_stereo.patch drifted, skipped"; } || true; \
          fi \
       && if [ ! -d crestereo ]; then \
            git clone --depth 1 https://github.com/megvii-research/CREStereo.git crestereo \
            && { (cd crestereo && git apply ../crestereo.patch) \
-                || echo "WARN: crestereo.patch drifted, skipped"; } \
-           && (cd crestereo && python download_models.py < /dev/null); \
+                || echo "WARN: crestereo.patch drifted, skipped"; } || true; \
          fi \
       && if [ ! -d crestereo_pytorch ]; then \
            git clone --depth 1 https://github.com/ibaiGorordo/CREStereo-Pytorch.git crestereo_pytorch \
            && { (cd crestereo_pytorch && git apply ../crestereo_pytorch.patch) \
-                || echo "WARN: crestereo_pytorch.patch drifted, skipped"; } \
-           && (cd crestereo_pytorch && python download_models.py < /dev/null); \
+                || echo "WARN: crestereo_pytorch.patch drifted, skipped"; } || true; \
          fi ) \
  && if [ "$CUDA_VERSION" != "0" ] && [ ! -d thirdparty/mast3r ]; then \
       ( cd thirdparty \
@@ -249,9 +226,7 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
             && { (cd croco && git apply ../../../mast3r-dust3r-croco.patch) \
                  || echo "WARN: mast3r-dust3r-croco.patch skipped"; } \
             && { (cd croco/models/curope && python setup.py build_ext --inplace) \
-                 || echo "WARN: curope ext skipped (pure-torch fallback)"; } \
-            && mkdir -p checkpoints \
-            && (cd checkpoints && wget -q https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth)) ); \
+                 || echo "WARN: curope ext skipped (pure-torch fallback)"; })) ; \
     fi \
  && if [ "$CUDA_VERSION" != "0" ] && [ ! -d thirdparty/mvdust3r ]; then \
       ( cd thirdparty \
@@ -261,9 +236,7 @@ RUN . ./pyenv-activate.sh && . ./cuda_config.sh \
             && { git apply ../mvdust3r.patch \
                  || echo "WARN: mvdust3r.patch does not apply at pinned commit, skipped"; } \
             && { (cd croco/models/curope && python setup.py build_ext --inplace) \
-                 || echo "WARN: curope ext skipped (pure-torch fallback)"; } \
-            && mkdir -p checkpoints \
-            && (cd checkpoints && cp ../../mvdust3r_scripts/download_models.py . && python download_models.py < /dev/null)) ); \
+                 || echo "WARN: curope ext skipped (pure-torch fallback)"; })) ; \
     fi \
  && if [ "$CUDA_VERSION" != "0" ] && [ ! -d thirdparty/vggt ]; then \
       git clone --depth 1 https://github.com/facebookresearch/vggt.git thirdparty/vggt; fi \
